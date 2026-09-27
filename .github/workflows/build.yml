@@ -159,8 +159,8 @@ jobs:
       - name: 构建
         env:
           RY_USE_SWIFTUI_MENU: ${{ inputs.ry_use_swiftui_menu }}
-          # 诊断用：让 swiftc 打印子命令与底层 clang 的报错，便于定位 PCH 失败
-          RY_SWIFT_VERBOSE: "1"
+          # 让 swiftc 的报错不被 Theos 的 parse-swiftc-output 过滤器吞掉
+          RY_SWIFT_PASSTHROUGH: "1"
         run: |
           set -euo pipefail
           export THEOS="$THEOS"
