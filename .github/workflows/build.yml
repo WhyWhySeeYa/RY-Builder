@@ -1,14 +1,12 @@
 # ============================================================================
 #  xxqg 公开构建仓库工作流 —— macOS runner 构建，产物发布回私有仓库
 #
-#  本文件位于公开仓库 WhyWhySeeYa/RY-Builder（.github/workflows/build.yml）
+#  本文件位于公开仓库 WhyWhySeeYa/RY-Builder
 #
-#  用法：
-#    1. 在本仓库 Settings → Secrets and variables → Actions 新建：
-#         XXQG_PAT = fine-grained PAT，仅授权 WhyWhySeeYa/xxqg，
-#                    权限 Contents: Read and write
-#    2. Actions 页面手动 Run workflow（填 source_ref：私有仓库的分支名或 SHA）
-#    3. 构建成功后，包会出现在私有仓库 WhyWhySeeYa/xxqg 的 Releases 里
+#  用法：Run workflow，填 source_ref（私有仓库 jayne-ho/xxqg 的分支名或 SHA）
+#  产物会发布到 jayne-ho/xxqg 的 Releases。
+#
+#  依赖的 secret：XXQG_PAT（对 jayne-ho/xxqg 有 contents:read/write）
 #
 #  为什么源码不会泄露：本工作流用 XXQG_PAT 通过 GitHub API 拉私有仓库 tarball
 #  到 runner 临时目录，源码不进入这个公开仓库的 git 历史；产物（.deb）用
@@ -25,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: "WhyWhySeeYa/xxqg 的分支或 commit SHA"
+        description: "jayne-ho/xxqg 的分支或 commit SHA"
         required: true
         default: "feat/new-ui"
       ry_use_swiftui_menu:
@@ -51,8 +49,8 @@ env:
   THEOS: ${{ github.workspace }}/theos
   THEOS_COMMIT: 88506b2c22e9e07dd4ed055f23c9e398a117a2c7
   IOS_SDK_VERSION: "16.5"
-  SOURCE_REPO: WhyWhySeeYa/xxqg
-  TARGET_REPO: WhyWhySeeYa/xxqg
+  SOURCE_REPO: jayne-ho/xxqg
+  TARGET_REPO: jayne-ho/xxqg
 
 jobs:
   build:
