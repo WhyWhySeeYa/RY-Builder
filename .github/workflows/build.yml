@@ -1,0 +1,197 @@
+# ============================================================================
+#  xxqg 公开构建仓库工作流 —— macOS runner 构建，产物发布回私有仓库
+#
+#  本文件位于公开仓库 WhyWhySeeYa/RY-Builder（.github/workflows/build.yml）
+#
+#  用法：
+#    1. 在本仓库 Settings → Secrets and variables → Actions 新建：
+#         XXQG_PAT = fine-grained PAT，仅授权 WhyWhySeeYa/xxqg，
+#                    权限 Contents: Read and write
+#    2. Actions 页面手动 Run workflow（填 source_ref：私有仓库的分支名或 SHA）
+#    3. 构建成功后，包会出现在私有仓库 WhyWhySeeYa/xxqg 的 Releases 里
+#
+#  为什么源码不会泄露：本工作流用 XXQG_PAT 通过 GitHub API 拉私有仓库 tarball
+#  到 runner 临时目录，源码不进入这个公开仓库的 git 历史；产物（.deb）用
+#  gh release create 直接推到私有仓库 Release，不产出公开可下载的 Artifact。
+#
+#  ⚠️ 公开仓库的 Actions 日志是公开的。本文件刻意不打印源码内容与符号表，
+#     但 Theos 编译输出仍会显示文件路径。若不可接受，请改用私有仓库 +
+#     macos-14（免费额度 2000 分钟/月，macOS 按 10 倍计 = 约 200 分钟）。
+# ============================================================================
+
+name: Build xxqg (SwiftUI) → private release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "WhyWhySeeYa/xxqg 的分支或 commit SHA"
+        required: true
+        default: "feat/new-ui"
+      ry_use_swiftui_menu:
+        description: "菜单实现：1 = SwiftUI 新菜单，0 = 旧 UIKit 菜单"
+        required: true
+        type: choice
+        options: ["1", "0"]
+        default: "1"
+      publish_release:
+        description: "构建成功后发布 Release 到私有仓库"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xxqg-public-builder
+  cancel-in-progress: false
+
+env:
+  THEOS: ${{ github.workspace }}/theos
+  THEOS_COMMIT: 88506b2c22e9e07dd4ed055f23c9e398a117a2c7
+  IOS_SDK_VERSION: "16.5"
+  SOURCE_REPO: WhyWhySeeYa/xxqg
+  TARGET_REPO: WhyWhySeeYa/xxqg
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - name: 校验 secret 与私有仓库可达性
+        env:
+          GH_TOKEN: ${{ secrets.XXQG_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::缺少 secrets.XXQG_PAT —— 需要一个对 ${SOURCE_REPO} 有 contents:read/write 的 fine-grained PAT"
+            exit 1
+          fi
+          gh api "repos/${SOURCE_REPO}" -q '"私有仓库: " + .full_name + "  private=" + (.private|tostring)'
+
+      - name: 拉取私有源码（源码不进本公开仓库）
+        env:
+          GH_TOKEN: ${{ secrets.XXQG_PAT }}
+        run: |
+          set -euo pipefail
+          REF="${{ inputs.source_ref }}"
+          SOURCE_SHA=$(gh api "repos/${SOURCE_REPO}/commits/${REF}" -q '.sha')
+          echo "SOURCE_SHA=${SOURCE_SHA}" >> "$GITHUB_ENV"
+          echo "SOURCE_REF=${REF}" >> "$GITHUB_ENV"
+          echo "目标 commit: ${SOURCE_SHA}"
+          curl -sL -H "Authorization: Bearer ${GH_TOKEN}" \
+               -H "Accept: application/vnd.github+json" \
+               "https://api.github.com/repos/${SOURCE_REPO}/tarball/${SOURCE_SHA}" \
+               -o /tmp/source.tar.gz
+          mkdir -p source && tar -xzf /tmp/source.tar.gz -C source --strip-components=1
+          echo "已解出 $(find source -type f | wc -l | tr -d ' ') 个文件"
+          test -f source/Makefile || { echo "::error::源码缺少 Makefile"; exit 1; }
+
+      - name: 选择 Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: 缓存 Theos 与 SDK
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/theos
+            ~/Library/Caches/xxqg-theos
+          key: xxqg-theos-${{ env.THEOS_COMMIT }}-${{ env.IOS_SDK_VERSION }}-v1
+      - name: 安装依赖
+        run: |
+          set -euo pipefail
+          brew install make libarchive openssl@3 xz dpkg ldid
+
+      - name: 安装 Theos
+        run: |
+          set -euo pipefail
+          if [ ! -d "$THEOS/.git" ]; then
+            git clone --recursive --depth 1 https://github.com/roothide/theos.git "$THEOS"
+          fi
+          cd "$THEOS"
+          git fetch --depth 1 origin "$THEOS_COMMIT" 2>/dev/null || true
+          git checkout -q "$THEOS_COMMIT" 2>/dev/null || true
+          git submodule update --init --recursive --depth 1
+          # Swift 支持由 roothide/theos 的 vendor/swift-support 提供
+          test -d "$THEOS/vendor/swift-support" && echo "swift-support: 已就位" || echo "swift-support: 未找到（Darwin 平台走 Xcode swiftc，通常不影响）"
+          echo "Theos: $(git -C "$THEOS" rev-parse --short HEAD)"
+
+      - name: 安装 iPhoneOS SDK
+        run: |
+          set -euo pipefail
+          mkdir -p "$THEOS/sdks"
+          SDK_DIR="$THEOS/sdks/iPhoneOS${IOS_SDK_VERSION}.sdk"
+          if [ ! -d "$SDK_DIR" ]; then
+            cd /tmp
+            curl -sfL "https://github.com/theos/sdks/archive/master.tar.gz" -o sdk.tar.gz
+            tar -xzf sdk.tar.gz --wildcards "sdks-master/iPhoneOS${IOS_SDK_VERSION}.sdk" 2>/dev/null \
+              || tar -xzf sdk.tar.gz
+            rm -rf "$SDK_DIR"
+            mv "sdks-master/iPhoneOS${IOS_SDK_VERSION}.sdk" "$SDK_DIR"
+          fi
+          test -d "$SDK_DIR" || { echo "::error::SDK 安装失败"; exit 1; }
+          echo "SDK: $SDK_DIR"
+
+      - name: 校验 Swift 工具链
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          swiftc --version
+          echo "swiftc 可用 —— SwiftUI 菜单可编译"
+      - name: 构建
+        env:
+          RY_USE_SWIFTUI_MENU: ${{ inputs.ry_use_swiftui_menu }}
+        run: |
+          set -euo pipefail
+          export THEOS="$THEOS"
+          cd source
+          echo "RY_USE_SWIFTUI_MENU=${RY_USE_SWIFTUI_MENU}"
+          python3 --version
+          bash build.sh
+          echo "--- 产物 ---"
+          find . -maxdepth 3 \( -name '*.deb' -o -name 'Packages' \) | sort
+
+      - name: 发布到私有仓库 Release
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ secrets.XXQG_PAT }}
+        run: |
+          set -euo pipefail
+          cd source
+          TAG="build-$(date -u +%Y%m%d-%H%M%S)"
+          TITLE="xxqg ${SOURCE_REF} @ ${SOURCE_SHA:0:7}"
+          NOTES="由公开构建仓库产出并回推。
+          - 源码: https://github.com/${SOURCE_REPO}/tree/${SOURCE_SHA}
+          - RY_USE_SWIFTUI_MENU=${{ inputs.ry_use_swiftui_menu }}
+          - Xcode 15.4 / iPhoneOS ${IOS_SDK_VERSION} SDK"
+          # 收集可发布文件（.deb 优先，其次 Packages）
+          mkdir -p /tmp/rel
+          find . -name '*.deb' -exec cp {} /tmp/rel/ \; || true
+          find . -name 'Packages' -exec cp {} /tmp/rel/ \; || true
+          test -n "$(ls -A /tmp/rel)" || { echo "::error::没有找到可发布的产物"; exit 1; }
+          ls -la /tmp/rel
+          gh release create "$TAG" \
+            --repo "$TARGET_REPO" \
+            --title "$TITLE" \
+            --notes "$NOTES" \
+            --target "$SOURCE_SHA" \
+            /tmp/rel/*
+
+      - name: 构建摘要
+        if: always()
+        run: |
+          {
+            echo "### xxqg 构建结果"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 源码 ref | \`${SOURCE_REF:-?}\` |"
+            echo "| commit | \`${SOURCE_SHA:-?}\` |"
+            echo "| SwiftUI 菜单 | ${{ inputs.ry_use_swiftui_menu }} |"
+            echo "| 状态 | ${{ job.status }} |"
+            echo ""
+            echo "> 失败排查：若报 \`SWIFT_BRIDGING_HEADER\` 或 \`-swift-version\`，检查"
+            echo "> Makefile 的 \`RYCore_SWIFT_*\` 段；若报 \`clang-19: not found\`，"
+            echo "> 说明 Makefile 的主机判定没生效（应为 Darwin 走 Xcode clang）。"
+          } >> "$GITHUB_STEP_SUMMARY"
