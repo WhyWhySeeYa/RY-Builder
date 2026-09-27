@@ -137,6 +137,25 @@ jobs:
           xcodebuild -version
           swiftc --version
           echo "swiftc 可用 —— SwiftUI 菜单可编译"
+      - name: PCH 探针（诊断桥接头能否被 ObjC 前端解析）
+        if: always()
+        working-directory: source
+        run: |
+          set +e
+          echo "== clang: $(xcrun --sdk iphoneos clang --version | head -1)"
+          xcrun --sdk iphoneos clang \
+            -x objective-c-header -fobjc-arc -fsyntax-only \
+            -target arm64-apple-ios14.0 \
+            -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -include supports/hudapp-prefix.pch \
+            -I. -Iheaders -Idependencies/include -I_external/include -Iexploits -Iexploits/Jailbreak \
+            -ICustomView -IGame -IGame/Aim -IGame/Draw -IGame/Engine -IGame/MemTool -IGame/Offset \
+            -IGame/Share -IGame/Utils -IGame/images -IHUD -IHUD/UIKitMenu -IIMGUI -IIMGUI/Font \
+            -IIMGUI/Touch -IKIF -ILauncher -ILauncher/Auth -IPTFakeTouch -ITrGui -IUI -Itouch/HID \
+            -Flibraries \
+            supports/RYSwift-Bridging-Header.h 2>&1 | tail -40
+          echo "== 探针结束（exit=$?，此步骤不影响构建判定）"
+
       - name: 构建
         env:
           RY_USE_SWIFTUI_MENU: ${{ inputs.ry_use_swiftui_menu }}
