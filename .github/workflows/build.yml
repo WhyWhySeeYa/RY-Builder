@@ -169,7 +169,7 @@ jobs:
           python3 --version
           bash build.sh
           echo "--- 产物 ---"
-          find . -maxdepth 3 \( -name '*.deb' -o -name 'Packages' \) | sort
+          find . -maxdepth 3 \( -name '*.deb' -o -name '*.tipa' -o -name 'Packages' \) | sort
 
       - name: 发布到私有仓库 Release
         if: ${{ inputs.publish_release }}
@@ -187,6 +187,7 @@ jobs:
           # 收集可发布文件（.deb 优先，其次 Packages）
           mkdir -p /tmp/rel
           find . -name '*.deb' -exec cp {} /tmp/rel/ \; || true
+          find . -name '*.tipa' -exec cp {} /tmp/rel/ \; || true
           find . -name 'Packages' -exec cp {} /tmp/rel/ \; || true
           test -n "$(ls -A /tmp/rel)" || { echo "::error::没有找到可发布的产物"; exit 1; }
           ls -la /tmp/rel
